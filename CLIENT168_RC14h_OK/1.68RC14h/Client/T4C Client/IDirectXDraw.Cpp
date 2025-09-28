@@ -1,5 +1,4 @@
 #include "pch.h"
-#include <windows.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include "IDirectXDraw.h"
@@ -11,12 +10,22 @@
 
 extern Global g_Global;
 
-
 #ifdef _DEBUG
 int DebugDC = 0;
 #endif
 
+#ifdef WIN32
+#include <windows.h>
+#include <ddraw.h>  // Add if not already included
+
 LPDIRECTDRAW        lpdd;
+#else
+#include <SDL3/SDL.h>
+
+SDL_Window*         sdlWindow = nullptr;
+SDL_Renderer*       sdlRenderer = nullptr;
+SDL_Surface*        sdlBackSurface = nullptr;  // For compatibility with locking
+#endif
 
 /*RECT	Rectangle_Src,Rectangle_Dest;	//pour l'affichage des sprites
 
@@ -30,27 +39,30 @@ LPDIRECTXDRAW        lpDXDirectDraw = NULL;
 bool primaryDrawBuffer = true;
 
 IDirectXDraw::IDirectXDraw(void) {
-/* Initialize the DirectX Environment.
-   */                      
+   // Initialize variables
+#ifdef WIN32
    lpddpal = 0;
    lpdd = 0;
    lpFrontBuffer = 0;
    lpBackBuffer = 0;
+#else
+   sdlWindow = nullptr;
+   sdlRenderer = nullptr;
+   sdlBackSurface = nullptr;
+#endif
    DXCompleteInit = FALSE;
 }
 
 
 IDirectXDraw::~IDirectXDraw(void) {
-/* Close the DirectX Draw Environment.
-   */                      
    Release();
 }
 
 
-LONG CALLBACK HookMessageCallback( int message, WPARAM wParam, LPARAM lParam );
-
-HRESULT IDirectXDraw::CreateDirectX(HWND hwnd, int ScreenX, int ScreenY, int ScreenBPP, int forceVideoMode) 
+HRESULT IDirectXDraw::CreateDirectX(void* hwnd, int ScreenX, int ScreenY, int ScreenBPP, int forceVideoMode) 
 {
+#ifdef WIN32
+   // Existing DirectX code here (keep as is, but remove HWND if adjusting signature)
    HRESULT hresult;
 
    RestoreDisplayMode();
@@ -88,7 +100,7 @@ HRESULT IDirectXDraw::CreateDirectX(HWND hwnd, int ScreenX, int ScreenY, int Scr
    OldScreenBPP = ddsd.ddpfPixelFormat.dwRGBBitCount;//afk 2 min k
    if (Custom.gWindowed)
    {
-      if ((hresult = lpdd->SetCooperativeLevel(hwnd, DDSCL_NORMAL )) != DD_OK) 
+      if ((hresult = lpdd->SetCooperativeLevel((HWND)hwnd, DDSCL_NORMAL )) != DD_OK) 
          return hresult;// Can't set the Cooperative Level.
       
       if (OldScreenBPP != 16)
@@ -96,17 +108,17 @@ HRESULT IDirectXDraw::CreateDirectX(HWND hwnd, int ScreenX, int ScreenY, int Scr
    }
    else 
    {
-      if ((hresult = lpdd->SetCooperativeLevel(hwnd, DDSCL_EXCLUSIVE | DDSCL_FULLSCREEN)) != DD_OK) 
+      if ((hresult = lpdd->SetCooperativeLevel((HWND)hwnd, DDSCL_EXCLUSIVE | DDSCL_FULLSCREEN)) != DD_OK) 
          return hresult;// Can't set the Cooperative Level.
    }   
    
-   //SetWindowPos(hwnd,NULL,0,0,g_Global.GetDisplayW(),g_Global.GetDisplayH(),SWP_DRAWFRAME); // steph désactivation
-   SetWindowPos(hwnd, NULL, (GetSystemMetrics(SM_CXSCREEN) - g_Global.GetScreenW()) / 2, (GetSystemMetrics(SM_CYSCREEN) - g_Global.GetScreenH()) / 4, g_Global.GetDisplayW(), g_Global.GetDisplayH(), SWP_DRAWFRAME); // steph ajout
+   //SetWindowPos(hwnd,NULL,0,0,g_Global.GetDisplayW(),g_Global.GetDisplayH(),SWP_DRAWFRAME); // steph dÃ©sactivation
+   SetWindowPos((HWND)hwnd, NULL, (GetSystemMetrics(SM_CXSCREEN) - g_Global.GetScreenW()) / 2, (GetSystemMetrics(SM_CYSCREEN) - g_Global.GetScreenH()) / 4, g_Global.GetDisplayW(), g_Global.GetDisplayH(), SWP_DRAWFRAME); // steph ajout
 
-   ShowWindow(hwnd,SW_SHOW);
+   ShowWindow((HWND)hwnd,SW_SHOW);
    RECT ClientRect; 
-   GetClientRect(hwnd,&ClientRect);
-   SetWindowPos(hwnd,NULL,0,0,2*g_Global.GetDisplayW()-ClientRect.right,2*g_Global.GetDisplayH()-ClientRect.bottom,SWP_NOMOVE);
+   GetClientRect((HWND)hwnd,&ClientRect);
+   SetWindowPos((HWND)hwnd,NULL,0,0,2*g_Global.GetDisplayW()-ClientRect.right,2*g_Global.GetDisplayH()-ClientRect.bottom,SWP_NOMOVE);
 
 
    if (Custom.gWindowed)
@@ -133,7 +145,7 @@ HRESULT IDirectXDraw::CreateDirectX(HWND hwnd, int ScreenX, int ScreenY, int Scr
       }
       
       LOG << "* DRW = 4- SetHWnd\r\n";
-      if (hresult = lpClipper->SetHWnd( 0, hwnd )!= DD_OK)
+      if (hresult = lpClipper->SetHWnd( 0, (HWND)hwnd )!= DD_OK)
       {
          lpClipper-> Release();
          lpFrontBuffer->Release();
@@ -253,7 +265,7 @@ HRESULT IDirectXDraw::CreateDirectX(HWND hwnd, int ScreenX, int ScreenY, int Scr
          // Can't set the display mode.
          return hresult;
       
-      if ((hresult = lpdd->SetCooperativeLevel(hwnd, DDSCL_EXCLUSIVE | DDSCL_FULLSCREEN)) != DD_OK)
+      if ((hresult = lpdd->SetCooperativeLevel((HWND)hwnd, DDSCL_EXCLUSIVE | DDSCL_FULLSCREEN)) != DD_OK)
          // Can't set the Cooperative Level.
          return hresult; 
       
@@ -402,6 +414,56 @@ HRESULT IDirectXDraw::CreateDirectX(HWND hwnd, int ScreenX, int ScreenY, int Scr
 
 
    return DD_OK;
+#else
+   // SDL3 initialization for Linux
+   if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+      LOG << "SDL_Init failed: " << SDL_GetError() << "\r\n";
+      return -1;  // Use HRESULT-like error
+   }
+
+   Uint32 flags = Custom.gWindowed ? 0 : SDL_WINDOW_FULLSCREEN;
+   sdlWindow = SDL_CreateWindow("T4C Client", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, ScreenX, ScreenY, flags);
+   if (!sdlWindow) {
+      LOG << "SDL_CreateWindow failed: " << SDL_GetError() << "\r\n";
+      SDL_Quit();
+      return -1;
+   }
+
+   sdlRenderer = SDL_CreateRenderer(sdlWindow, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+   if (!sdlRenderer) {
+      LOG << "SDL_CreateRenderer failed: " << SDL_GetError() << "\r\n";
+      SDL_DestroyWindow(sdlWindow);
+      SDL_Quit();
+      return -1;
+   }
+
+   // Create a back surface for compatibility
+   sdlBackSurface = SDL_CreateRGBSurface(0, ScreenX, ScreenY, ScreenBPP, 0, 0, 0, 0);
+   if (!sdlBackSurface) {
+      LOG << "SDL_CreateRGBSurface failed: " << SDL_GetError() << "\r\n";
+      SDL_DestroyRenderer(sdlRenderer);
+      SDL_DestroyWindow(sdlWindow);
+      SDL_Quit();
+      return -1;
+   }
+
+   // Set bit masks (adapt from DirectX logic)
+   SDL_PixelFormat* fmt = sdlBackSurface->format;
+   wRMask = fmt->Rmask;
+   wGMask = fmt->Gmask;
+   wBMask = fmt->Bmask;
+
+   // Calculate shifts (similar to DirectX)
+   // ... (implement bRUp, bGUp, etc. calculation as in Windows code)
+
+   // Clear screen
+   SDL_SetRenderDrawColor(sdlRenderer, 0, 0, 0, 255);
+   SDL_RenderClear(sdlRenderer);
+   SDL_RenderPresent(sdlRenderer);
+
+   DXCompleteInit = TRUE;
+   return 0;  // Success
+#endif
 }
 
 void IDirectXDraw::RestoreDisplayMode(void) {
@@ -413,8 +475,8 @@ void IDirectXDraw::RestoreDisplayMode(void) {
 extern AppManagement g_App;
 
 void IDirectXDraw::Release(void) {
-/* Close the DirectX Draw Environment.
- */                      
+#ifdef WIN32
+   // Existing DirectX release code
 	if (lpBackBuffer/* && g_App.isFocus() */) { //BLBL Freeze test
    // Chk si le lpBackBuffer n'a pas deja ete deleter.
       CLOSELOG( "Releasing lpBackBuffer" );
@@ -454,6 +516,22 @@ void IDirectXDraw::Release(void) {
       lpdd->Release();
 		lpdd = 0;   
    }
+#else
+   // SDL3 release
+   if (sdlBackSurface) {
+      SDL_FreeSurface(sdlBackSurface);
+      sdlBackSurface = nullptr;
+   }
+   if (sdlRenderer) {
+      SDL_DestroyRenderer(sdlRenderer);
+      sdlRenderer = nullptr;
+   }
+   if (sdlWindow) {
+      SDL_DestroyWindow(sdlWindow);
+      sdlWindow = nullptr;
+   }
+   SDL_Quit();
+#endif
 }
 
 void DXDErrorHandle(HRESULT hresult, char *Method) {
@@ -1050,7 +1128,7 @@ HRESULT DXDClear(void) {
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
-//LPDIRECTDRAWSURFACE IDirectXDraw::PicklockFrontBuffer //BLBL 26 mars 2009 désactivé complètement cette fonction.
+//LPDIRECTDRAWSURFACE IDirectXDraw::PicklockFrontBuffer //BLBL 26 mars 2009 dÃ©sactivÃ© complÃ¨tement cette fonction.
 //////////////////////////////////////////////////////////////////////////////////////////
 // Gets a lock on the front buffer. If the surface as lost, the fonction
 // will try to restore it only if the application currently has the focus. 
@@ -1229,6 +1307,7 @@ void IDirectXDraw::ReleaseFDC( HDC x ){
 }
 void IDirectXDraw::Flip()
 {
+#ifdef WIN32
    if (Custom.gWindowed)
    {
       RECT rcRectDest;
@@ -1250,8 +1329,13 @@ void IDirectXDraw::Flip()
    {
       Sleep(0);
    }
+#else
+   // SDL3 flip: Present the renderer
+   SDL_RenderPresent(sdlRenderer);
+#endif
 }
-void IDirectXDraw::Blt( LPDIRECTDRAWSURFACE x ){
+void IDirectXDraw::Blt( void* x ){  // Adjust type if needed
+#ifdef WIN32
     /*if( !g_App.isFocus() && !Custom.gWindowed){//BLBL Freeze test
         Sleep(0);
         return;
@@ -1259,12 +1343,19 @@ void IDirectXDraw::Blt( LPDIRECTDRAWSURFACE x ){
     if( lpDXComplexSurface->IsLost() != DD_OK ){
         lpDXComplexSurface->Restore();
     }
-    lpDXComplexSurface->Blt(NULL, x, NULL, DDBLT_WAIT, NULL);
-
+    lpDXComplexSurface->Blt(NULL, (LPDIRECTDRAWSURFACE)x, NULL, DDBLT_WAIT, NULL);
+#else
+   // SDL3 Blt: Assume x is an SDL_Surface, blit to back surface then to renderer
+   SDL_BlitSurface((SDL_Surface*)x, NULL, sdlBackSurface, NULL);
+   SDL_Texture* texture = SDL_CreateTextureFromSurface(sdlRenderer, sdlBackSurface);
+   SDL_RenderCopy(sdlRenderer, texture, NULL, NULL);
+   SDL_DestroyTexture(texture);
+#endif
 }
 
-void IDirectXDraw::Blt2( LPDIRECTDRAWSURFACE x ,RECT *rcSource,RECT *rcDest)
+void IDirectXDraw::Blt2( void* x ,RECT *rcSource,RECT *rcDest)
 {
+#ifdef WIN32
     /*if( !g_App.isFocus() && !Custom.gWindowed){//BLBL Freeze test
         Sleep(0);
         return;
@@ -1272,8 +1363,16 @@ void IDirectXDraw::Blt2( LPDIRECTDRAWSURFACE x ,RECT *rcSource,RECT *rcDest)
     if( lpDXComplexSurface->IsLost() != DD_OK ){
         lpDXComplexSurface->Restore();
     }
-    lpDXComplexSurface->Blt(rcDest, x, rcSource, DDBLT_WAIT, NULL);
-
+    lpDXComplexSurface->Blt(rcDest, (LPDIRECTDRAWSURFACE)x, rcSource, DDBLT_WAIT, NULL);
+#else
+   // SDL3 Blt2
+   SDL_Rect src = { rcSource->left, rcSource->top, rcSource->right - rcSource->left, rcSource->bottom - rcSource->top };
+   SDL_Rect dst = { rcDest->left, rcDest->top, rcDest->right - rcDest->left, rcDest->bottom - rcDest->top };
+   SDL_BlitSurface((SDL_Surface*)x, &src, sdlBackSurface, &dst);
+   SDL_Texture* texture = SDL_CreateTextureFromSurface(sdlRenderer, sdlBackSurface);
+   SDL_RenderCopy(sdlRenderer, texture, NULL, NULL);
+   SDL_DestroyTexture(texture);
+#endif
 }
 void IDirectXDraw::RestoreView(){
     lpDXDirectDraw->RestoreDisplayMode();
@@ -1283,6 +1382,13 @@ void IDirectXDraw::RestoreSurfaceF(){
     DXDErrorHandle(lpDXPrimarySurface->Restore(), "Primary Get Focus");
 }
 void IDirectXDraw::RestoreSurface(){
+#ifdef WIN32
     DXDErrorHandle(lpDXComplexSurface->Restore(), "Complex Get Focus");
+#else
+   // SDL3 doesn't have direct "restore", but can recreate if needed
+   if (!sdlRenderer) {
+      // Reinitialize if lost
+      // Call CreateDirectX or similar
+   }
+#endif
 }
-
